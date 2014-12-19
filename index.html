@@ -1,0 +1,1290 @@
+<!doctype html>
+<html>
+<head>
+    <title>ShaderEdit</title>
+    <script src="lib/go.js"></script>
+    <script src="lib/require.js"></script>
+    <script src="lib/goo.js"></script>
+    <style>
+        * {
+            margin: 0;
+        }
+        body {
+            background-color: rgb(49, 49, 49);
+        }
+        #sample {
+            width: 800px;
+            height: 800px;
+            overflow: hidden;
+        }
+        canvas {
+            position: absolute;
+            top:0;
+            left:0;
+        }
+    </style>
+<script id="code">
+
+    var boxMinSize = 80;
+
+    function init() {
+
+        var $ = go.GraphObject.make;  //for conciseness in defining node templates
+
+        myDiagram = $(go.Diagram, "myDiagram", {
+            initialContentAlignment: go.Spot.Center,
+            "undoManager.isEnabled": true
+        });
+
+        // when the document is modified, add a "*" to the title and enable the "Save" button
+        myDiagram.addDiagramListener("Modified", function(e) {
+            var button = document.getElementById("SaveButton");
+            if (button) button.disabled = !myDiagram.isModified;
+                var idx = document.title.indexOf("*");
+            if (myDiagram.isModified) {
+                if (idx < 0) document.title += "*";
+            } else {
+                if (idx >= 0) document.title = document.title.substr(0, idx);
+            }
+        });
+
+        var nodeMenu = $(go.Adornment, "Vertical",
+            $("ContextMenuButton", $(go.TextBlock, "Add top port"), {
+                click: function (e, obj) {
+                    addPort("top");
+                }
+            }),
+            $("ContextMenuButton", $(go.TextBlock, "Add left port"), {
+                click: function (e, obj) {
+                    addPort("left");
+                }
+            }),
+            $("ContextMenuButton", $(go.TextBlock, "Add right port"), {
+                click: function (e, obj) {
+                    addPort("right");
+                }
+            }),
+            $("ContextMenuButton", $(go.TextBlock, "Add bottom port"), {
+                click: function (e, obj) {
+                    addPort("bottom");
+                }
+            })
+        );
+
+    var portSize = new go.Size(8, 8);
+    var portMenu =  // context menu for each port
+      $(go.Adornment, "Vertical",
+        $("ContextMenuButton",
+          $(go.TextBlock, "Remove port"),
+          // in the click event handler, the obj.part is the Adornment; its adornedObject is the port
+          { click: function (e, obj) { removePort(obj.part.adornedObject); } }),
+        $("ContextMenuButton",
+          $(go.TextBlock, "Change color"),
+          { click: function (e, obj) { changeColor(obj.part.adornedObject); } }),
+        $("ContextMenuButton",
+          $(go.TextBlock, "Remove side ports"),
+          { click: function (e, obj) { removeAll(obj.part.adornedObject); } })
+      );
+    // the node template
+    // includes a panel on each side with an itemArray of panels containing ports
+    myDiagram.nodeTemplate =
+      $(go.Node, "Table",
+        { locationObjectName: "BODY",
+          locationSpot: go.Spot.Center,
+          selectionObjectName: "BODY"
+          //, contextMenu: nodeMenu
+        },
+        new go.Binding("location", "loc", go.Point.parse).makeTwoWay(go.Point.stringify),
+        // the body
+        $(go.Panel, "Auto",
+          { row: 1, column: 1, name: "BODY",
+            stretch: go.GraphObject.Fill },
+          $(go.Shape, "Rectangle",
+            {   stroke: "rgb(79, 79, 79)",
+                fill: "rgb(55, 56, 60)",
+              minSize: new go.Size(boxMinSize, boxMinSize) }),
+          $(go.TextBlock,
+            { margin: 10, textAlign: "center", stroke: "rgb(178, 178, 178)" },
+            new go.Binding("text", "label"))
+        ),  // end Auto Panel body
+
+        // the Panel holding the left port elements, which are themselves Panels,
+        // created for each item in the itemArray, bound to data.leftArray
+        $(go.Panel, "Vertical",
+          new go.Binding("itemArray", "leftArray"),
+          { row: 1, column: 0,
+            itemTemplate:
+              $(go.Panel,
+
+                    $(go.TextBlock, {
+                        margin: new go.Margin(0, 10),
+                        textAlign: "left",
+                        stroke: "rgb(178, 178, 178)"
+                    },
+                    new go.Binding("text", "portId")),
+
+                { _side: "left",  // internal property to make it easier to tell which side it's on
+                  fromSpot: go.Spot.Left, toSpot: go.Spot.Left,
+                  fromLinkable: true, toLinkable: true, cursor: "pointer",
+                  contextMenu: portMenu },
+                new go.Binding("portId", "portId"),
+                $(go.Shape, "Rectangle",
+                  { stroke: null,
+                    desiredSize: portSize,
+                    margin: new go.Margin(1,0) },
+                  new go.Binding("fill", "portColor"))
+              )  // end itemTemplate
+          }
+        ),  // end Vertical Panel
+
+        // the Panel holding the right port elements, which are themselves Panels,
+        // created for each item in the itemArray, bound to data.rightArray
+        $(go.Panel, "Vertical",
+          new go.Binding("itemArray", "rightArray"),
+
+          { row: 1,
+            column: 2,
+            itemTemplate:
+              $(go.Panel,
+
+                    $(go.TextBlock, {
+                        margin: new go.Margin(0, 10),
+                        textAlign: "left",
+                        stroke: "rgb(178, 178, 178)"
+                    },
+                    new go.Binding("text", "portId")),
+
+                { _side: "right",
+                  fromSpot: go.Spot.Right, toSpot: go.Spot.Right,
+                  fromLinkable: true, toLinkable: true, cursor: "pointer",
+                  contextMenu: portMenu },
+                new go.Binding("portId", "portId"),
+                $(go.Shape, "Rectangle",
+                  { fill: 'rgb(62, 62, 62)',
+                    stroke: null,
+                    desiredSize: portSize,
+                    margin: new go.Margin(1, 0) }
+                  /*new go.Binding("fill", "portColor")*/ )
+              )  // end itemTemplate
+          }
+        )  // end Vertical Panel
+      );  // end Node
+    // an orthogonal link template, reshapable and relinkable
+    myDiagram.linkTemplate =
+      $(CustomLink,  // defined below
+        {
+          routing: go.Link.AvoidsNodes,
+          corner: 4,
+          curve: go.Link.JumpGap,
+          reshapable: true,
+          resegmentable: true,
+          relinkableFrom: true,
+          relinkableTo: true
+        },
+        new go.Binding("points").makeTwoWay(),
+        $(go.Shape)  // just a plain black line
+      );
+    // support double-clicking in the background to add a copy of this data as a node
+    myDiagram.toolManager.clickCreatingTool.archetypeNodeData = {
+      key: "Unit",
+      leftArray: [],
+      rightArray: [],
+      topArray: [],
+      bottomArray: []
+      // if you add data properties here, you should copy them in copyNodeData below
+    };
+    // load the diagram from JSON data
+    load();
+  }
+  // This custom-routing Link class tries to separate parallel links from each other.
+  // This assumes that ports are lined up in a row/column on a side of the node.
+  function CustomLink() {
+    go.Link.call(this);
+  };
+  go.Diagram.inherit(CustomLink, go.Link);
+  CustomLink.prototype.findSidePortIndexAndCount = function(node, port) {
+    var nodedata = node.data;
+    var portdata = port.data;
+    var side = port._side;
+    var arr = nodedata[side + "Array"];
+    var len = arr.length;
+    for (var i = 0; i < len; i++) {
+      if (arr[i] === portdata) return [i, len];
+    }
+    return [-1, len];
+  };
+  /** @override */
+  CustomLink.prototype.computeEndSegmentLength = function(node, port, spot, from) {
+    var esl = go.Link.prototype.computeEndSegmentLength.call(this, node, port, spot, from);
+    var thispt = port.getDocumentPoint(this.computeSpot(from));
+    var otherpt = this.getOtherPort(port).getDocumentPoint(this.computeSpot(!from));
+    if (Math.abs(thispt.x - otherpt.x) > 20 || Math.abs(thispt.y - otherpt.y) > 20) {
+      var info = this.findSidePortIndexAndCount(node, port);
+      var idx = info[0];
+      var count = info[1];
+      if (port._side == "top" || port._side == "bottom") {
+        if (otherpt.x < thispt.x) {
+          return esl + 4 + idx * 8;
+        } else {
+          return esl + (count - idx - 1) * 8;
+        }
+      } else {  // left or right
+        if (otherpt.y < thispt.y) {
+          return esl + 4 + idx * 8;
+        } else {
+          return esl + (count - idx - 1) * 8;
+        }
+      }
+    }
+    return esl;
+  };
+  /** @override */
+  CustomLink.prototype.hasCurviness = function() {
+    if (isNaN(this.curviness)) return true;
+    return go.Link.prototype.hasCurviness.call(this);
+  };
+  /** @override */
+  CustomLink.prototype.computeCurviness = function() {
+    if (isNaN(this.curviness)) {
+      var fromnode = this.fromNode;
+      var fromport = this.fromPort;
+      var fromspot = this.computeSpot(true);
+      var frompt = fromport.getDocumentPoint(fromspot);
+      var tonode = this.toNode;
+      var toport = this.toPort;
+      var tospot = this.computeSpot(false);
+      var topt = toport.getDocumentPoint(tospot);
+      if (Math.abs(frompt.x - topt.x) > 20 || Math.abs(frompt.y - topt.y) > 20) {
+        if ((fromspot.equals(go.Spot.Left) || fromspot.equals(go.Spot.Right)) &&
+            (tospot.equals(go.Spot.Left) || tospot.equals(go.Spot.Right))) {
+          var fromseglen = this.computeEndSegmentLength(fromnode, fromport, fromspot, true);
+          var toseglen = this.computeEndSegmentLength(tonode, toport, tospot, false);
+          var c = (fromseglen - toseglen) / 2;
+          if (frompt.x + fromseglen >= topt.x - toseglen) {
+            if (frompt.y < topt.y) return c;
+            if (frompt.y > topt.y) return -c;
+          }
+        } else if ((fromspot.equals(go.Spot.Top) || fromspot.equals(go.Spot.Bottom)) &&
+                   (tospot.equals(go.Spot.Top) || tospot.equals(go.Spot.Bottom))) {
+          var fromseglen = this.computeEndSegmentLength(fromnode, fromport, fromspot, true);
+          var toseglen = this.computeEndSegmentLength(tonode, toport, tospot, false);
+          var c = (fromseglen - toseglen) / 2;
+          if (frompt.x + fromseglen >= topt.x - toseglen) {
+            if (frompt.y < topt.y) return c;
+            if (frompt.y > topt.y) return -c;
+          }
+        }
+      }
+    }
+    return go.Link.prototype.computeCurviness.call(this);
+  };
+  // When copying a node, we need to copy the data that the node is bound to.
+  // This JavaScript object includes properties for the node as a whole, and
+  // four properties that are Arrays holding data for each port.
+  // Those arrays and port data objects need to be copied too.
+  function copyNodeData(data) {
+    var copy = {};
+    copy.key = data.key;  // adding to the Model will make the key value unique
+    copy.loc = data.loc;
+    copy.leftArray = copyPortArray(data.leftArray);
+    copy.rightArray = copyPortArray(data.rightArray);
+    copy.topArray = copyPortArray(data.topArray);
+    copy.bottomArray = copyPortArray(data.bottomArray);
+    // if you add data properties, you should copy them here too
+    return copy;
+  }
+  function copyPortArray(arr) {
+    var copy = [];
+    if (Array.isArray(arr)) {
+      for (var i = 0; i < arr.length; i++) {
+        copy.push(copyPortData(arr[i]));
+      }
+    }
+    return copy;
+  }
+  function copyPortData(data) {
+    var copy = {};
+    copy.portId = data.portId;
+    copy.portColor = data.portColor;
+    // if you add port data properties, you should copy them here too
+    return copy;
+  }
+  // Add a port to the specified side of the selected nodes.
+  function addPort(side) {
+    myDiagram.startTransaction("addPort");
+    myDiagram.selection.each(function(node) {
+      // skip any selected Links
+      if (!(node instanceof go.Node)) return;
+      // compute the next available index number for the side
+      var i = 0;
+      while (node.findPort(side + i.toString()) !== node) i++;
+      // now this new port name is unique within the whole Node because of the side prefix
+      var name = side + i.toString();
+      // get the Array of port data to be modified
+      var arr = node.data[side + "Array"];
+      if (arr) {
+        // create a new port data object
+        var newportdata = {
+          portId: name,
+          portColor: "rgb(62, 62, 62)"//go.Brush.randomColor()
+          // if you add port data properties here, you should copy them in copyPortData above
+        };
+        // and add it to the Array of port data
+        myDiagram.model.insertArrayItem(arr, -1, newportdata);
+      }
+    });
+    myDiagram.commitTransaction("addPort");
+  }
+  // Remove the clicked port from the node.
+  // Links to the port will be redrawn to the node's shape.
+  function removePort(port) {
+    myDiagram.startTransaction("removePort");
+    var pid = port.portId;
+    var arr = port.panel.itemArray;
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i].portId === pid) {
+        myDiagram.model.removeArrayItem(arr, i);
+        break;
+      }
+    }
+    myDiagram.commitTransaction("removePort");
+  }
+  // Remove all ports from the same side of the node as the clicked port.
+  function removeAll(port) {
+    myDiagram.startTransaction("removePorts");
+    var nodedata = port.part.data;
+    var side = port._side;  // there are four property names, all ending in "Array"
+    myDiagram.model.setDataProperty(nodedata, side + "Array", []);  // an empty Array
+    myDiagram.commitTransaction("removePorts");
+  }
+  // Change the color of the clicked port.
+  function changeColor(port) {
+    myDiagram.startTransaction("colorPort");
+    var data = port.data;
+    //myDiagram.model.setDataProperty(data, "portColor", go.Brush.randomColor());
+    myDiagram.commitTransaction("colorPort");
+  }
+  // Save the model to / load it from JSON text shown on the page itself, not in a database.
+  function save() {
+    document.getElementById("mySavedModel").value = myDiagram.model.toJson();
+    myDiagram.isModified = false;
+  }
+  function load() {
+    myDiagram.model = go.Model.fromJson(document.getElementById("mySavedModel").value);
+    // link data includes the names of the to- and from- ports;
+    // the GraphLinksModel needs to set these property names:
+    // linkFromPortIdProperty and linkToPortIdProperty.
+    // Customize the node data copying function
+    // to avoid sharing of port data arrays and of the port data themselves.
+    // (Functions cannot be written/read in JSON format.)
+    myDiagram.model.copyNodeDataFunction = copyNodeData;
+  }
+</script>
+</head>
+<body onload="init()">
+<div id="sample">
+  <div id="myDiagram" style="width:800px; height:800px;"></div>
+  <!--
+  Add port to selected nodes:
+  <button onclick="addPort('top')">Top</button>
+  <button onclick="addPort('bottom')">Bottom</button>
+  <button onclick="addPort('left')">Left</button>
+  <button onclick="addPort('right')">Right</button>
+  <p>
+  Double-click in the diagram background in order to add a new node there.
+  In this sample you can add ports to a selected nodes by clicking the above buttons or by using the context menu.
+  Draw links between ports by dragging between ports.
+  If you select a link you can relink or reshape it.
+  Right-click or touch-hold on a port to bring up a context menu that allows you to remove it or change its color.
+  </p>
+  <p>
+  <button id="SaveButton" onclick="save()">Save</button>
+  <button onclick="load()">Load</button>
+  </p>
+-->
+  <textarea id="mySavedModel" style="width:100%;height:200px;display:none">
+{
+  "class": "go.GraphLinksModel",
+  "linkDataArray": [],
+  "linkFromPortIdProperty": "fromPort",
+  "linkToPortIdProperty": "toPort",
+  "nodeDataArray": [
+    {
+      "bottomArray": [],
+      "key": "Main",
+      "type": "main",
+      "label": "main()",
+      "leftArray": [],
+      "loc": "0 0",
+      "rightArray": [
+        {
+          "portColor": "rgb(62, 62, 62);",
+          "portId": "diffuse"
+        },
+        {
+          "portColor": "rgb(62, 62, 62);",
+          "portId": "specular"
+        },
+        {
+          "portColor": "rgb(62, 62, 62);",
+          "portId": "normal"
+        },
+        {
+          "portColor": "rgb(62, 62, 62);",
+          "portId": "opacity"
+        },
+        {
+          "portColor": "rgb(62, 62, 62);",
+          "portId": "emissive"
+        }
+      ],
+      "topArray": []
+    },
+    {
+      "bottomArray": [],
+      "key": " ",
+      "label": "",
+      "type": "preview",
+      "leftArray": [],
+      "loc": "0 -200",
+      "rightArray": [],
+      "topArray": []
+    },
+
+    {
+      "bottomArray": [],
+      "key": "panner1",
+      "type": "panner",
+      "label": "Panner",
+      "loc": "300 0",
+      "leftArray": [
+        {
+          "portColor": "rgb(62, 62, 62);",
+          "portId": "rgb"
+        },
+        {
+          "portColor": "rgb(255, 0, 0);",
+          "portId": "u"
+        },
+        {
+          "portColor": "rgb(0, 255, 0);",
+          "portId": "v"
+        }
+      ],
+      "rightArray": [
+        {
+          "portColor": "rgb(255, 0, 0);",
+          "portId": "s"
+        },
+        {
+          "portColor": "rgb(0, 255, 0);",
+          "portId": "t"
+        }
+      ],
+      "topArray": []
+    },
+
+    {
+      "bottomArray": [],
+      "key": "tex1",
+      "type": "texture",
+      "label": "texture",
+      "loc": "300 100",
+      "leftArray": [
+        {
+          "portColor": "rgb(62, 62, 62);",
+          "portId": "rgb"
+        },
+        {
+          "portColor": "rgb(255, 0, 0);",
+          "portId": "r"
+        },
+        {
+          "portColor": "rgb(0, 255, 0);",
+          "portId": "g"
+        },
+        {
+          "portColor": "rgb(0, 0, 255);",
+          "portId": "b"
+        }
+      ],
+      "rightArray": [
+      ],
+      "topArray": []
+    },
+
+    {
+      "bottomArray": [],
+      "key": "sine0",
+      "type": "sine",
+      "label": "y=sin(x)",
+      "leftArray": [],
+      "loc": "300 -100",
+      "leftArray": [
+        {
+          "portColor": "rgb(62, 62, 62);",
+          "portId": "y"
+        }
+      ],
+      "rightArray": [
+        {
+          "portColor": "rgb(62, 62, 62);",
+          "portId": "x"
+        }
+      ],
+      "topArray": []
+    },
+
+    {
+      "bottomArray": [],
+      "key": "time0",
+      "type": "time",
+      "label": "time",
+      "loc": "500 -100",
+      "leftArray": [
+        {
+          "portColor": "rgb(62, 62, 62);",
+          "portId": "t"
+        }
+      ],
+      "topArray": []
+    }
+  ]
+}
+  </textarea>
+
+
+
+  <script>
+
+require([
+    'goo/entities/EntityUtils',
+    'goo/entities/GooRunner',
+    'goo/renderer/Camera',
+    'goo/renderer/Material',
+    'goo/renderer/Texture',
+    'goo/renderer/MeshData',
+    'goo/renderer/pass/RenderTarget',
+    'goo/renderer/light/PointLight',
+    'goo/renderer/shaders/ShaderLib',
+    'goo/renderer/shaders/ShaderBuilder',
+    'goo/renderer/Shader',
+    'goo/scripts/OrbitCamControlScript',
+    'goo/shapes/Quad',
+    'goo/shapes/Torus',
+    'goo/math/Vector3',
+    'goo/scripts/Scripts',
+    'goo/renderer/TextureCreator'
+], function (
+    EntityUtils,
+    GooRunner,
+    Camera,
+    Material,
+    Texture,
+    MeshData,
+    RenderTarget,
+    PointLight,
+    ShaderLib,
+    ShaderBuilder,
+    Shader,
+    OrbitCamControlScript,
+    Quad,
+    Torus,
+    Vector3,
+    Scripts,
+    TextureCreator
+) {
+    "use strict";
+
+    var CreateForge = {};
+    CreateForge.Graph = function(){
+        this.connections = [];
+    };
+    CreateForge.Graph.prototype.connect = function(nodeA, outputA, nodeB, inputB){
+        this.connections.push({
+            nodeA: nodeA,
+            outputA: outputA,
+            nodeB: nodeB,
+            inputB: inputB
+        });
+        nodeA.outputs[outputA].node = nodeB;
+        nodeA.outputs[outputA].port = inputB;
+
+        nodeB.inputs[inputB].node = nodeA;
+        nodeB.inputs[inputB].port = outputA;
+    };
+    CreateForge.Graph.prototype.connectToMain = function(node, output, mainPort){
+        console.log(node,output,mainPort)
+        this[mainPort + 'Node'] = node;
+        this[mainPort + 'Output'] = output;
+    };
+    CreateForge.Graph.prototype.getMaterial = function(){
+        var diffuseExpression = '';
+        var normalExpression = '';
+        var opacityExpression = '';
+        if(this.diffuseNode) diffuseExpression = this.diffuseNode.expression(this.diffuseOutput, 'v4');
+        if(this.normalNode) normalExpression = this.normalNode.expression(this.normalOutput, 'v4');
+        if(this.opacityNode) opacityExpression = this.opacityNode.expression(this.opacityOutput, 'f');
+
+        var mat = new Material({
+            processors: [
+                ShaderBuilder.uber.processor,
+                ShaderBuilder.light.processor,
+                ShaderBuilder.animation.processor,
+                function (shader, shaderInfo) {
+                    shader.defines.TEXCOORD0 = true;
+                }
+            ],
+            defines: {
+                TEXCOORD0: true,
+                DIFFUSE_MAP: true
+            },
+            attributes: {
+                vertexPosition: MeshData.POSITION,
+                vertexNormal: MeshData.NORMAL,
+                vertexTangent: MeshData.TANGENT,
+                vertexColor: MeshData.COLOR,
+                vertexUV0: MeshData.TEXCOORD0,
+                vertexUV1: MeshData.TEXCOORD1,
+                vertexJointIDs: MeshData.JOINTIDS,
+                vertexWeights: MeshData.WEIGHTS
+            },
+            uniforms: {
+                textureMap: 'TEX_MAP',
+                globalTime: Shader.TIME,
+                viewProjectionMatrix: Shader.VIEW_PROJECTION_MATRIX,
+                worldMatrix: Shader.WORLD_MATRIX,
+                normalMatrix: Shader.NORMAL_MATRIX,
+                cameraPosition: Shader.CAMERA,
+                diffuseMap : Shader.DIFFUSE_MAP,
+                offsetRepeat : [0,0,1,1],
+                normalMap : Shader.NORMAL_MAP,
+                normalMultiplier: 1.0,
+                specularMap : Shader.SPECULAR_MAP,
+                emissiveMap : Shader.EMISSIVE_MAP,
+                aoMap : Shader.AO_MAP,
+                lightMap : Shader.LIGHT_MAP,
+                environmentCube : 'ENVIRONMENT_CUBE',
+                environmentSphere : 'ENVIRONMENT_SPHERE',
+                reflectionMap : 'REFLECTION_MAP',
+                transparencyMap : 'TRANSPARENCY_MAP',
+                opacity: 1.0,
+                reflectivity: 0.0,
+                refractivity: 0.0,
+                etaRatio: -0.5,
+                fresnel: 0.0,
+                discardThreshold: -0.01,
+                fogSettings: [0, 10000],
+                fogColor: [1, 1, 1],
+                shadowDarkness: 0.5,
+                vertexColorAmount: 1.0,
+                lodBias: 0.0,
+                wrapSettings: [0.5, 0.0]
+            },
+            builder: function (shader, shaderInfo) {
+                ShaderBuilder.light.builder(shader, shaderInfo);
+            },
+            vshader: function () {
+                return [
+                'attribute vec3 vertexPosition;',
+
+                '#ifdef NORMAL',
+                    'attribute vec3 vertexNormal;',
+                '#endif',
+                '#ifdef TANGENT',
+                    'attribute vec4 vertexTangent;',
+                '#endif',
+                '#ifdef COLOR',
+                    'attribute vec4 vertexColor;',
+                '#endif',
+                '#ifdef TEXCOORD0',
+                    'attribute vec2 vertexUV0;',
+                    'uniform vec4 offsetRepeat;',
+                    'varying vec2 texCoord0;',
+                '#endif',
+                '#ifdef TEXCOORD1',
+                    'attribute vec2 vertexUV1;',
+                    'varying vec2 texCoord1;',
+                '#endif',
+
+                'uniform mat4 viewProjectionMatrix;',
+                'uniform mat4 worldMatrix;',
+                'uniform mat3 normalMatrix;',
+                'uniform vec3 cameraPosition;',
+                'uniform float globalTime;',
+
+                'varying vec3 vWorldPos;',
+                'varying vec3 viewPosition;',
+                '#ifdef NORMAL',
+                'varying vec3 normal;',
+                '#endif',
+                '#ifdef TANGENT',
+                'varying vec3 binormal;',
+                'varying vec3 tangent;',
+                '#endif',
+                '#ifdef COLOR',
+                'varying vec4 color;',
+                '#endif',
+
+                ShaderBuilder.light.prevertex,
+
+                ShaderBuilder.animation.prevertex,
+
+                'void main(void) {',
+                    'mat4 wMatrix = worldMatrix;',
+                    '#ifdef NORMAL',
+                        'mat3 nMatrix = normalMatrix;',
+                    '#endif',
+                    ShaderBuilder.animation.vertex,
+                    'vec4 worldPos = wMatrix * vec4(vertexPosition, 1.0);',
+                    'vWorldPos = worldPos.xyz;',
+                    'gl_Position = viewProjectionMatrix * worldPos;',
+
+                    'viewPosition = cameraPosition - worldPos.xyz;',
+
+                    '#ifdef NORMAL',
+                    '   normal = normalize(nMatrix * vertexNormal);',
+                    '#endif',
+                    '#ifdef TANGENT',
+                    '   tangent = normalize(nMatrix * vertexTangent.xyz);',
+                    '   binormal = cross(normal, tangent) * vec3(vertexTangent.w);',
+                    '#endif',
+                    '#ifdef COLOR',
+                    '   color = vertexColor;',
+                    '#endif',
+                    '#ifdef TEXCOORD0',
+                    '   texCoord0 = vertexUV0 * offsetRepeat.zw + offsetRepeat.xy;',
+                    '#endif',
+                    '#ifdef TEXCOORD1',
+                    '   texCoord1 = vertexUV1;',
+                    '#endif',
+
+                    ShaderBuilder.light.vertex,
+                '}'
+            ].join('\n');
+            },
+            fshader: function () {
+                return [
+
+                'uniform sampler2D textureMap;',
+                'uniform float globalTime;',
+                'uniform float lodBias;',
+                '#ifdef DIFFUSE_MAP',
+                    'uniform sampler2D diffuseMap;',
+                '#endif',
+                '#ifdef NORMAL_MAP',
+                    'uniform sampler2D normalMap;',
+                    'uniform float normalMultiplier;',
+                '#endif',
+                '#ifdef SPECULAR_MAP',
+                    'uniform sampler2D specularMap;',
+                '#endif',
+                '#ifdef EMISSIVE_MAP',
+                    'uniform sampler2D emissiveMap;',
+                '#endif',
+                '#ifdef AO_MAP',
+                    'uniform sampler2D aoMap;',
+                '#endif',
+                '#ifdef LIGHT_MAP',
+                    'uniform sampler2D lightMap;',
+                '#endif',
+                '#ifdef TRANSPARENCY_MAP',
+                    'uniform sampler2D transparencyMap;',
+                '#endif',
+                '#ifdef REFLECTIVE',
+                    '#ifdef ENVIRONMENT_CUBE',
+                        'uniform samplerCube environmentCube;',
+                    '#elif defined(ENVIRONMENT_SPHERE)',
+                        'uniform sampler2D environmentSphere;',
+                    '#endif',
+                    'uniform vec4 clearColor;',
+                    'uniform float reflectivity;',
+                    'uniform float fresnel;',
+                    'uniform float refractivity;',
+                    'uniform float etaRatio;',
+                    '#ifdef REFLECTION_MAP',
+                        'uniform sampler2D reflectionMap;',
+                    '#endif',
+                '#endif',
+
+                '#ifdef OPACITY',
+                    'uniform float opacity;',
+                '#endif',
+                '#ifdef DISCARD',
+                    'uniform float discardThreshold;',
+                '#endif',
+
+                '#ifdef FOG',
+                    'uniform vec2 fogSettings;',
+                    'uniform vec3 fogColor;',
+                '#endif',
+
+                'varying vec3 vWorldPos;',
+                'varying vec3 viewPosition;',
+                '#ifdef NORMAL',
+                    'varying vec3 normal;',
+                '#endif',
+                '#ifdef TANGENT',
+                    'varying vec3 binormal;',
+                    'varying vec3 tangent;',
+                '#endif',
+                '#ifdef COLOR',
+                    'varying vec4 color;',
+                    'uniform float vertexColorAmount;',
+                '#endif',
+                '#ifdef TEXCOORD0',
+                    'varying vec2 texCoord0;',
+                '#endif',
+                '#ifdef TEXCOORD1',
+                    'varying vec2 texCoord1;',
+                '#endif',
+
+                '#define M_PI 3.14159265358979323846264338328',
+
+                ShaderBuilder.light.prefragment,
+
+                'void main(void)',
+                '{',
+                    'vec4 final_color = vec4(1.0);',
+
+                    '#if defined(DIFFUSE_MAP) && defined(TEXCOORD0)',
+                        'final_color *= texture2D(diffuseMap, texCoord0, lodBias);',
+                    '#endif',
+
+                    // Diffuse
+                    diffuseExpression ? 'final_color *= ' + diffuseExpression + ';' : '',
+
+                    '#ifdef COLOR',
+                        'final_color *= mix(vec4(1.0), color, vertexColorAmount);',
+                    '#endif',
+
+                    '#if defined(TRANSPARENCY_MAP) && defined(TEXCOORD0)',
+                        'final_color.a = texture2D(transparencyMap, texCoord0).a;',
+                    '#endif',
+                    '#ifdef OPACITY',
+                        'final_color.a *= opacity;',
+                    '#endif',
+                    opacityExpression ? 'final_color.a *= (' + opacityExpression + ');' : '',
+
+                    '#ifdef DISCARD',
+                        'if (final_color.a < discardThreshold) discard;',
+                    '#endif',
+
+                    '#ifdef LIGHT_MAP',
+                        '#ifdef TEXCOORD1',
+                            'final_color.rgb *= texture2D(lightMap, texCoord1).rgb * 2.0 - 0.5;',
+                        '#elif defined(TEXCOORD0)',
+                            'final_color.rgb *= texture2D(lightMap, texCoord0).rgb * 2.0 - 0.5;',
+                        '#endif',
+                    '#else',
+
+                        'vec3 N = vec3(0.0, 1.0, 0.0);',
+                        '#if defined(NORMAL)',
+                            'N = normalize(normal);',
+                        '#endif',
+                        '#if defined(TANGENT) && defined(NORMAL_MAP) && defined(TEXCOORD0)',
+                            'mat3 tangentToWorld = mat3(tangent, binormal, normal);',
+                            'vec3 tangentNormal = texture2D(normalMap, texCoord0, lodBias).xyz * vec3(2.0) - vec3(1.0);',
+                            'tangentNormal.xy *= normalMultiplier;',
+                            'vec3 worldNormal = (tangentToWorld * tangentNormal);',
+                            'N = normalize(worldNormal);',
+                        '#endif',
+
+                        // Normal
+                        normalExpression ? 'N = (' + normalExpression + ').xyz;' : 'N = vec3(0);',
+
+                        ShaderBuilder.light.fragment,
+                    '#endif',
+
+                    'gl_FragColor = final_color;',
+                '}'
+            ].join('\n');
+            }
+        });
+
+        mat.setTexture('TEX_MAP', new TextureCreator().loadTexture2D('checker.jpg'));
+
+        return mat;
+    };
+
+    function createPortData(type){
+        return { node: null, port: null, type: type };
+    }
+
+    CreateForge.Node = function (){
+        this.inputs = {};
+        this.outputs = {};
+    };
+    CreateForge.Node.prototype = {
+        preFragment: function(){},
+        preVertex: function(){},
+        expression: function(){},
+        quadMaterial: function(){}
+    };
+
+    CreateForge.SineNode = function (){
+        CreateForge.Node.call(this);
+        this.inputs.x = createPortData('f');
+        this.outputs.y = createPortData('f');
+    };
+    CreateForge.SineNode.prototype.expression = function(){
+        var inExpression = 0;
+        if(this.inputs.x.node){
+            inExpression = this.inputs.x.node.expression(this.inputs.x.port, 'f');
+        }
+        return 'sin(' + inExpression + ')';
+    };
+
+    CreateForge.TimeNode = function (){
+        CreateForge.Node.call(this);
+        this.outputs.t = createPortData('f');
+    };
+    CreateForge.TimeNode.prototype.expression = function(port, type){
+        return 'globalTime';
+    };
+
+    CreateForge.PannerNode = function(){
+        CreateForge.Node.call(this);
+        this.outputs.rgb = createPortData('v3');
+        this.outputs.u = createPortData('f');
+        this.outputs.v = createPortData('f');
+        this.inputs.s = createPortData('f');
+        this.inputs.t = createPortData('f');
+    };
+    CreateForge.PannerNode.prototype.expression = function(port, type){
+
+        var coord = 'texCoord0';
+        if(this.inputs.s.node){
+            coord += ' + vec2(0, ' + this.inputs.s.node.expression(this.inputs.s.port, 'f') + ')';
+        }
+        if(this.inputs.t.node){
+            coord += ' + vec2(' + this.inputs.t.node.expression(this.inputs.t.port, 'f') + ', 0)';
+        }
+
+        coord = 'mod(' + coord + ', vec2(1))';
+
+        switch(port){
+        case 'rgb':
+            switch(type){
+            case 'v4': return 'vec4(' + coord + ',0,1)';
+            default: return coord;
+            }
+            break;
+        case 'u':
+            return '' + coord + '.x';
+        case 'v':
+            return '' + coord + '.y';
+        }
+    };
+    CreateForge.PannerNode.prototype.quadMaterial = function(){
+
+        var coord = 'texCoord0';
+        if(this.inputs.s.node){
+            coord += ' + vec2(0, ' + this.inputs.s.node.expression(this.inputs.s.port, 'f') + ')';
+        }
+        if(this.inputs.t.node){
+            coord += ' + vec2(' + this.inputs.t.node.expression(this.inputs.t.port, 'f') + ', 0)';
+        }
+
+        coord = 'mod(' + coord + ', vec2(1))';
+
+        return new Material({
+            defines: {
+                TEXCOORD0: true,
+                DIFFUSE_MAP: true
+            },
+            attributes : {
+                vertexPosition : MeshData.POSITION,
+                vertexUV0 : MeshData.TEXCOORD0
+            },
+            uniforms : {
+                viewProjectionMatrix : Shader.VIEW_PROJECTION_MATRIX,
+                worldMatrix : Shader.WORLD_MATRIX,
+                diffuseMap : Shader.DIFFUSE_MAP,
+                globalTime : Shader.TIME
+            },
+            vshader : [
+                'attribute vec3 vertexPosition;',
+                'attribute vec2 vertexUV0;',
+
+                'uniform mat4 viewProjectionMatrix;',
+                'uniform mat4 worldMatrix;',
+
+                'varying vec2 texCoord0;',
+
+                'void main(void) {',
+                    'texCoord0 = vertexUV0;',
+                    'gl_Position = viewProjectionMatrix * worldMatrix * vec4(vertexPosition, 1.0);',
+                '}'
+                ].join('\n'),
+            fshader : [
+                'uniform sampler2D diffuseMap;',
+                'varying vec2 texCoord0;',
+                'uniform float globalTime;',
+
+                'void main(void)',
+                '{',
+                    'gl_FragColor = vec4(' + coord + ',0,1);',
+                '}'
+            ].join('\n')
+        });
+    };
+
+
+
+    CreateForge.TextureNode = function(){
+        CreateForge.Node.call(this);
+        this.outputs.rgb = createPortData('v3');
+        this.outputs.r = createPortData('f');
+        this.outputs.g = createPortData('f');
+        this.outputs.b = createPortData('f');
+    };
+    CreateForge.TextureNode.prototype.expression = function(port, type){
+        return 'texture2D(textureMap, texCoord0, lodBias)';
+    };
+    CreateForge.TextureNode.prototype.quadMaterial = function(){
+
+        var mat = new Material({
+            defines: {
+                TEXCOORD0: true,
+                DIFFUSE_MAP: true
+            },
+            attributes : {
+                vertexPosition : MeshData.POSITION,
+                vertexUV0 : MeshData.TEXCOORD0
+            },
+            uniforms : {
+                viewProjectionMatrix : Shader.VIEW_PROJECTION_MATRIX,
+                worldMatrix : Shader.WORLD_MATRIX,
+                diffuseMap : Shader.DIFFUSE_MAP,
+                globalTime : Shader.TIME,
+                textureMap : 'TEX_MAP'
+            },
+            vshader : [
+                'attribute vec3 vertexPosition;',
+                'attribute vec2 vertexUV0;',
+
+                'uniform mat4 viewProjectionMatrix;',
+                'uniform mat4 worldMatrix;',
+
+                'varying vec2 texCoord0;',
+
+                'void main(void) {',
+                    'texCoord0 = vertexUV0;',
+                    'gl_Position = viewProjectionMatrix * worldMatrix * vec4(vertexPosition, 1.0);',
+                '}'
+                ].join('\n'),
+            fshader : [
+                'uniform sampler2D diffuseMap;',
+                'uniform sampler2D textureMap;',
+                'varying vec2 texCoord0;',
+                'uniform float globalTime;',
+
+                'void main(void)',
+                '{',
+                    'gl_FragColor = texture2D(textureMap, texCoord0);',
+                '}'
+            ].join('\n')
+        });
+
+        mat.setTexture('TEX_MAP', new TextureCreator().loadTexture2D('checker.jpg'));
+
+        return mat;
+    };
+
+
+    var gooCanvas = document.createElement('canvas');
+    gooCanvas.width = 800;
+    gooCanvas.height = 800;
+    var goo = new GooRunner({
+        alpha: true,
+        antialias: true,
+        logo: false,
+        canvas: gooCanvas
+    });
+    goo.renderer.setClearColor(0, 0, 0, 0);
+    goo.renderer.domElement.id = 'goo';
+    document./*getElementById('sample')*/body.appendChild(goo.renderer.domElement);
+    goo.renderer.domElement.style.zIndex = 1000;
+    goo.renderer.domElement.style.pointerEvents = "none";
+
+    var width = goo.renderer.domElement.width;
+    var height = goo.renderer.domElement.height;
+
+    var renderTargetTexture = new RenderTarget(512, 512);
+
+    var quadEntities = {};
+    var graph;
+
+    var previewMaterial;
+    var previewEntity;
+
+    function rebuildAll(){
+        console.log('rebuild')
+        // Remove everything!
+        for(var key in quadEntities){
+            quadEntities[key].removeFromWorld();
+            delete quadEntities[key];
+        }
+
+        // Build graph
+        graph = new CreateForge.Graph();
+
+        // Test!
+        // var pannerNode = new CreateForge.PannerNode();
+        // graph.connectDiffuse(pannerNode, 'rgb');
+
+        var data = getData();
+        var nodes = {};
+
+        // Create nodes for all
+        for(var i=0; i<data.nodeDataArray.length; i++){
+            var nodeData = data.nodeDataArray[i];
+            var node;
+            switch(nodeData.type){
+            case 'panner':
+                node = new CreateForge.PannerNode();
+                break;
+            case 'time':
+                node = new CreateForge.TimeNode();
+                break;
+            case 'sine':
+                node = new CreateForge.SineNode();
+                break;
+            case 'texture':
+                node = new CreateForge.TextureNode();
+                break;
+            }
+            nodes[nodeData.key] = node;
+        }
+
+        // Connect the nodes
+        for (var i = 0; i < data.linkDataArray.length; i++) {
+            var link = data.linkDataArray[i];
+            if(link.to === 'Main'){
+                graph.connectToMain(nodes[link.from], link.fromPort, link.toPort);
+            } else {
+                // Connect
+                graph.connect(nodes[link.from], link.fromPort, nodes[link.to], link.toPort);
+            }
+        }
+
+        // Create quads
+        for(var i=0; i<data.nodeDataArray.length; i++){
+            var nodeData = data.nodeDataArray[i];
+            createQuad(nodeData, nodes[nodeData.key]);
+        }
+
+        previewMaterial = graph.getMaterial();
+        previewMaterial.uniforms.materialAmbient = [1, 1, 1, 1];
+        previewMaterial.uniforms.materialDiffuse = [1, 1, 1, 1];
+        previewMaterial.uniforms.materialSpecular = [0, 0, 0, 0];
+
+        previewEntity = goo.world.createEntity(goo.world, new Torus(40, 40), previewMaterial).addToWorld();
+        previewEntity.hide();
+    }
+    rebuildAll();
+
+    function createQuad(settings, node){
+        var w = boxMinSize / width;
+        var h = boxMinSize / height;
+
+        var material;
+
+        switch(settings.type){
+        case 'texture':
+            material = node.quadMaterial();
+            break;
+        case 'panner':
+            material = node.quadMaterial(); // TODO: custom shader
+            break;
+        case 'preview':
+            // Render the scene to the diffuse texture
+            w *= 4;
+            h *= 4;
+            material = new Material(ShaderLib.uber);
+            material.uniforms.materialAmbient = [1, 1, 1, 1];
+            material.uniforms.materialDiffuse = [1, 1, 1, 1];
+            material.uniforms.materialSpecular = [0, 0, 0, 0];
+            material.setTexture('DIFFUSE_MAP', renderTargetTexture);
+            break;
+        case 'sine':
+        default: return;
+        }
+
+        var meshData = new Quad(w, h);
+        var entity = goo.world.createEntity(goo.world, meshData, material).addToWorld();
+        quadEntities[settings.key] = entity;
+    }
+
+    // Setup rendertarget to draw on
+    //var renderTargetTexture = new RenderTarget(512, 512);
+    //material.setTexture('DIFFUSE_MAP', renderTargetTexture);
+
+    // Create separate camera to use for rendertarget
+    var externalCamera = new Camera(45, 1, 0.1, 1000);
+    externalCamera.translation.setd(0, 0, 10);
+    externalCamera.lookAt(new Vector3(), Vector3.UNIT_Y);
+
+    var dataChanged = true;
+    var lastJSON = '';
+    function getData(){
+        var json = myDiagram.model.toJson();
+        dataChanged = (json !== lastJSON);
+        lastJSON = json;
+        return JSON.parse(json);
+    }
+
+
+    var light = new PointLight();
+    light.intensity = 2;
+    var lightEntity = goo.world.createEntity(goo.world, light).addToWorld();
+    lightEntity.hide();
+    lightEntity.transformComponent.setTranslation(10, -10, 10);
+    var previewLights = [light];
+
+    goo.callbacksPreRender.push(function () {
+        var t = goo.world.time;
+
+        previewEntity.transformComponent.setRotation(0, t * 0.5, 0);
+
+        if(dataChanged){
+            rebuildAll();
+        }
+
+        // Draw scene from other camera rendertarget
+        //this.setClearColor(0.3, 0.3, 0.3, 1.0);
+        goo.renderer.render([previewEntity], externalCamera, previewLights, renderTargetTexture, true);
+
+        // Update positions
+        var data = getData();
+        for(var i=0; i<data.nodeDataArray.length; i++){
+            var node = data.nodeDataArray[i];
+            if(quadEntities[node.key]){
+                var pos = node.loc.split(" ");
+                pos[0] = parseFloat(pos[0]) - myDiagram.position.x - width / 2;
+                pos[1] = parseFloat(pos[1]) - myDiagram.position.y - height / 2;
+                quadEntities[node.key].setTranslation(
+                    - pos[0] / width,
+                    pos[1] / height,
+                    0
+                );
+            }
+        }
+    });
+
+    var camera = new Camera(45, 1, 0.1, 1000);
+    camera.setProjectionMode(Camera.Parallel);
+    camera.setFrustum(0.1, 1000, -0.5, 0.5, -0.5, 0.5, 1);
+    var cameraEntity = goo.world.createEntity(goo.world, camera, [0, 0, -20]);
+    cameraEntity.addToWorld();
+
+    cameraEntity.lookAt(new Vector3(), Vector3.UNIT_Y);
+
+});
+
+
+  </script>
+</div>
+</body>
+</html>
