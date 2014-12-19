@@ -892,7 +892,7 @@ require([
                         '#endif',
 
                         // Normal
-                        normalExpression ? 'N = (' + normalExpression + ').xyz;' : 'N = vec3(0);',
+                        normalExpression ? 'N = (' + normalExpression + ').xyz;' : '',
 
                         ShaderBuilder.light.fragment,
                     '#endif',
@@ -1177,9 +1177,9 @@ require([
         }
 
         previewMaterial = graph.getMaterial();
-        previewMaterial.uniforms.materialAmbient = [1, 1, 1, 1];
-        previewMaterial.uniforms.materialDiffuse = [1, 1, 1, 1];
-        previewMaterial.uniforms.materialSpecular = [0, 0, 0, 0];
+        previewMaterial.uniforms.materialAmbient = [0.3, 0.3, 0.3, 1];
+        previewMaterial.uniforms.materialDiffuse = [0.3, 0.3, 0.3, 1];
+        previewMaterial.uniforms.materialSpecular = [0.3, 0.3, 0.3, 1];
 
         previewEntity = goo.world.createEntity(goo.world, new Torus(40, 40), previewMaterial).addToWorld();
         previewEntity.hide();
@@ -1238,9 +1238,9 @@ require([
 
 
     var light = new PointLight();
-    light.intensity = 2;
+    light.intensity = 1;
     var lightEntity = goo.world.createEntity(goo.world, light).addToWorld();
-    lightEntity.hide();
+    // lightEntity.hide();
     lightEntity.transformComponent.setTranslation(10, -10, 10);
     var previewLights = [light];
 
