@@ -1,7 +1,7 @@
 <!doctype html>
 <html>
 <head>
-    <title>ShaderEdit</title>
+    <title>CreateForge</title>
     <script src="lib/go.js"></script>
     <script src="lib/require.js"></script>
     <script src="lib/goo.js"></script>
@@ -385,24 +385,6 @@
 <body onload="init()">
 <div id="sample">
   <div id="myDiagram" style="width:800px; height:800px;"></div>
-  <!--
-  Add port to selected nodes:
-  <button onclick="addPort('top')">Top</button>
-  <button onclick="addPort('bottom')">Bottom</button>
-  <button onclick="addPort('left')">Left</button>
-  <button onclick="addPort('right')">Right</button>
-  <p>
-  Double-click in the diagram background in order to add a new node there.
-  In this sample you can add ports to a selected nodes by clicking the above buttons or by using the context menu.
-  Draw links between ports by dragging between ports.
-  If you select a link you can relink or reshape it.
-  Right-click or touch-hold on a port to bring up a context menu that allows you to remove it or change its color.
-  </p>
-  <p>
-  <button id="SaveButton" onclick="save()">Save</button>
-  <button onclick="load()">Load</button>
-  </p>
--->
   <textarea id="mySavedModel" style="width:100%;height:200px;display:none">
 {
   "class": "go.GraphLinksModel",
@@ -490,7 +472,39 @@
       "key": "tex1",
       "type": "texture",
       "label": "texture",
+      "textureUrl": "chesterfield.png",
       "loc": "300 100",
+      "leftArray": [
+        {
+          "portColor": "rgb(62, 62, 62);",
+          "portId": "rgb"
+        },
+        {
+          "portColor": "rgb(255, 0, 0);",
+          "portId": "r"
+        },
+        {
+          "portColor": "rgb(0, 255, 0);",
+          "portId": "g"
+        },
+        {
+          "portColor": "rgb(0, 0, 255);",
+          "portId": "b"
+        }
+      ],
+      "rightArray": [
+      ],
+      "topArray": []
+    },
+
+
+    {
+      "bottomArray": [],
+      "key": "tex2",
+      "type": "texture",
+      "label": "texture",
+      "textureUrl": "checker.jpg",
+      "loc": "400 100",
       "leftArray": [
         {
           "portColor": "rgb(62, 62, 62);",
@@ -600,8 +614,16 @@ require([
     var CreateForge = {};
     CreateForge.Graph = function(){
         this.connections = [];
+        this.nodes = [];
+    };
+    CreateForge.Graph.prototype.addNode = function(node){
+      if(this.nodes.indexOf(node) === -1){
+        this.nodes.push(node);
+      }
     };
     CreateForge.Graph.prototype.connect = function(nodeA, outputA, nodeB, inputB){
+        this.addNode(nodeA);
+        this.addNode(nodeB);
         this.connections.push({
             nodeA: nodeA,
             outputA: outputA,
@@ -615,7 +637,7 @@ require([
         nodeB.inputs[inputB].port = outputA;
     };
     CreateForge.Graph.prototype.connectToMain = function(node, output, mainPort){
-        console.log(node,output,mainPort)
+        this.addNode(node);
         this[mainPort + 'Node'] = node;
         this[mainPort + 'Output'] = output;
     };
@@ -627,18 +649,34 @@ require([
         if(this.normalNode) normalExpression = this.normalNode.expression(this.normalOutput, 'v4');
         if(this.opacityNode) opacityExpression = this.opacityNode.expression(this.opacityOutput, 'f');
 
-        var mat = new Material({
+        // Add map variables to shader
+        var maps = [];
+        for (var i = 0; i < this.nodes.length; i++) {
+          var node = this.nodes[i];
+          if(node.textureUrl){
+            maps.push(node.textureMapVar);
+          }
+        }
+
+        var shader = {
             processors: [
                 ShaderBuilder.uber.processor,
                 ShaderBuilder.light.processor,
                 ShaderBuilder.animation.processor,
                 function (shader, shaderInfo) {
                     shader.defines.TEXCOORD0 = true;
+                    shader.defines.TANGENT = true;
+                    shader.defines.NORMAL = true;
+                    shader.defines.NORMAL_MAP = true;
+                    shader.defines.TEXCOORD0 = true;
                 }
             ],
             defines: {
                 TEXCOORD0: true,
-                DIFFUSE_MAP: true
+                DIFFUSE_MAP: true,
+                TANGENT: true,
+                NORMAL_MAP: true,
+                NORMAL: true
             },
             attributes: {
                 vertexPosition: MeshData.POSITION,
@@ -651,7 +689,8 @@ require([
                 vertexWeights: MeshData.WEIGHTS
             },
             uniforms: {
-                textureMap: 'TEX_MAP',
+                // textureMap: 'TEX_MAP',
+                // textureMap1: 'TEX_MAP1',
                 globalTime: Shader.TIME,
                 viewProjectionMatrix: Shader.VIEW_PROJECTION_MATRIX,
                 worldMatrix: Shader.WORLD_MATRIX,
@@ -767,7 +806,10 @@ require([
             fshader: function () {
                 return [
 
-                'uniform sampler2D textureMap;',
+                //'uniform sampler2D textureMap;',
+
+                maps.length ? 'uniform sampler2D '+maps.join(';\nuniform sampler2D ')+';' : '',
+
                 'uniform float globalTime;',
                 'uniform float lodBias;',
                 '#ifdef DIFFUSE_MAP',
@@ -883,16 +925,29 @@ require([
                         '#if defined(NORMAL)',
                             'N = normalize(normal);',
                         '#endif',
-                        '#if defined(TANGENT) && defined(NORMAL_MAP) && defined(TEXCOORD0)',
-                            'mat3 tangentToWorld = mat3(tangent, binormal, normal);',
-                            'vec3 tangentNormal = texture2D(normalMap, texCoord0, lodBias).xyz * vec3(2.0) - vec3(1.0);',
-                            'tangentNormal.xy *= normalMultiplier;',
-                            'vec3 worldNormal = (tangentToWorld * tangentNormal);',
-                            'N = normalize(worldNormal);',
-                        '#endif',
 
-                        // Normal
-                        normalExpression ? 'N = (' + normalExpression + ').xyz;' : '',
+                        // normalExpression ? [
+                        //   '#if defined(TANGENT)',
+                        //       // Normal
+                        //       'vec3 nm = normalize((' + normalExpression + ').xyz);',
+                        //       'mat3 tangentToWorld = mat3(tangent, binormal, normal);',
+                        //       'vec3 tangentNormal = nm * vec3(2.0) - vec3(1.0);',
+                        //       //'tangentNormal.xy *= 0.1;',
+                        //       'vec3 worldNormal = (tangentToWorld * tangentNormal);',
+                        //       'N = normalize(worldNormal);',
+                        //   '#endif'
+                        // ].join('\n') : '',
+
+                        normalExpression ? [
+                          '#if defined(TANGENT) && defined(NORMAL_MAP) && defined(TEXCOORD0)',
+                              'mat3 tangentToWorld = mat3(tangent, binormal, normal);',
+                              normalExpression ? 'vec3 tangentNormal = (' + normalExpression + ').xyz * vec3(2.0) - vec3(1.0);' : 'vec3 tangentNormal = texture2D(normalMap, texCoord0, lodBias).xyz * vec3(2.0) - vec3(1.0);',
+                              //'vec3 tangentNormal = texture2D(normalMap, texCoord0, lodBias).xyz * vec3(2.0) - vec3(1.0);',
+                              'tangentNormal.xy *= normalMultiplier;',
+                              'vec3 worldNormal = (tangentToWorld * tangentNormal);',
+                              'N = normalize(worldNormal);',
+                          '#endif',
+                        ].join('\n') : '',
 
                         ShaderBuilder.light.fragment,
                     '#endif',
@@ -901,9 +956,28 @@ require([
                 '}'
             ].join('\n');
             }
-        });
+        };
 
-        mat.setTexture('TEX_MAP', new TextureCreator().loadTexture2D('checker.jpg'));
+        // Add map variables to shader uniforms
+        for (var i = 0; i < this.nodes.length; i++) {
+          var node = this.nodes[i];
+          if(node.textureUrl){
+            shader.uniforms[node.textureMapVar] = node.textureMapVar2;
+          }
+        }
+
+        var mat = new Material(shader);
+
+        // Attach requested textures
+        for (var i = 0; i < this.nodes.length; i++) {
+          var node = this.nodes[i];
+          if(node.textureUrl){
+            mat.setTexture(node.textureMapVar2, new TextureCreator().loadTexture2D(node.textureUrl));
+          }
+        }
+
+        // Have to do this to make the normal calculations correct???
+        mat.setTexture('NORMAL_MAP', new TextureCreator().loadTexture2D(''));
 
         return mat;
     };
@@ -928,12 +1002,18 @@ require([
         this.inputs.x = createPortData('f');
         this.outputs.y = createPortData('f');
     };
-    CreateForge.SineNode.prototype.expression = function(){
-        var inExpression = 0;
+    CreateForge.SineNode.prototype.expression = function(port, type){
+        var inExpression = "0.0";
         if(this.inputs.x.node){
-            inExpression = this.inputs.x.node.expression(this.inputs.x.port, 'f');
+            inExpression = this.inputs.x.node.expression(this.inputs.x.port, type);
         }
-        return 'sin(' + inExpression + ')';
+        var exp = 'sin(' + inExpression + ')';
+
+        switch(type){
+          case 'v4': return 'vec4(vec3(' + exp + '), 1)';
+          case 'v3': return 'vec3(' + exp + ')';
+          default: return exp;
+        }
     };
 
     CreateForge.TimeNode = function (){
@@ -972,9 +1052,15 @@ require([
             }
             break;
         case 'u':
-            return '' + coord + '.x';
+            switch(type){
+            case 'v4': return 'vec4(vec3(' + coord + '.x),1)';
+            default: return '' + coord + '.x';
+            }
         case 'v':
-            return '' + coord + '.y';
+            switch(type){
+            case 'v4': return 'vec4(vec3(' + coord + '.y),1)';
+            default: return '' + coord + '.y';
+            }
         }
     };
     CreateForge.PannerNode.prototype.quadMaterial = function(){
@@ -1031,21 +1117,22 @@ require([
         });
     };
 
-
-
-    CreateForge.TextureNode = function(){
+    var textureMapVarId = 0;
+    CreateForge.TextureNode = function(options){
         CreateForge.Node.call(this);
         this.outputs.rgb = createPortData('v3');
         this.outputs.r = createPortData('f');
         this.outputs.g = createPortData('f');
         this.outputs.b = createPortData('f');
+        this.textureUrl = options.textureUrl || 'checker.jpg';
+        this.textureMapVar = 'textureMap' +textureMapVarId++;
+        this.textureMapVar2 = 'TEX_MAP_' +textureMapVarId++;
     };
     CreateForge.TextureNode.prototype.expression = function(port, type){
-        return 'texture2D(textureMap, texCoord0, lodBias)';
+        return 'texture2D(' + this.textureMapVar + ', texCoord0, lodBias)';
     };
     CreateForge.TextureNode.prototype.quadMaterial = function(){
-
-        var mat = new Material({
+          var shader = {
             defines: {
                 TEXCOORD0: true,
                 DIFFUSE_MAP: true
@@ -1058,8 +1145,7 @@ require([
                 viewProjectionMatrix : Shader.VIEW_PROJECTION_MATRIX,
                 worldMatrix : Shader.WORLD_MATRIX,
                 diffuseMap : Shader.DIFFUSE_MAP,
-                globalTime : Shader.TIME,
-                textureMap : 'TEX_MAP'
+                globalTime : Shader.TIME
             },
             vshader : [
                 'attribute vec3 vertexPosition;',
@@ -1076,19 +1162,23 @@ require([
                 '}'
                 ].join('\n'),
             fshader : [
-                'uniform sampler2D diffuseMap;',
-                'uniform sampler2D textureMap;',
+                'uniform sampler2D ' + this.textureMapVar + ';',
+
                 'varying vec2 texCoord0;',
                 'uniform float globalTime;',
 
                 'void main(void)',
                 '{',
-                    'gl_FragColor = texture2D(textureMap, texCoord0);',
+                    'gl_FragColor = texture2D(' + this.textureMapVar + ', texCoord0);',
                 '}'
             ].join('\n')
-        });
+        };
 
-        mat.setTexture('TEX_MAP', new TextureCreator().loadTexture2D('checker.jpg'));
+        shader.uniforms[this.textureMapVar] = this.textureMapVar2;
+
+        var mat = new Material(shader);
+
+        mat.setTexture(this.textureMapVar2, new TextureCreator().loadTexture2D(this.textureUrl));
 
         return mat;
     };
@@ -1153,7 +1243,9 @@ require([
                 node = new CreateForge.SineNode();
                 break;
             case 'texture':
-                node = new CreateForge.TextureNode();
+                node = new CreateForge.TextureNode({
+                  textureUrl: nodeData.textureUrl
+                });
                 break;
             }
             nodes[nodeData.key] = node;
