@@ -26,6 +26,10 @@
 
 </head>
 <body>
+
+<!-- Fixes the "setVelocity" error in goo engine -->
+<script>PannerNode.prototype.setVelocity = AudioListener.prototype.setVelocity = function(){};</script>
+
 <div id="sample">
   <div id="myDiagram" style="width:800px; height:800px;"></div>
   <textarea id="mySavedModel" style="width:100%;height:200px;display:none">
